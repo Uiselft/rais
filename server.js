@@ -77,34 +77,40 @@ wss.on("connection", (ws) => {
       // WebRTC peer mode (для букмарклета через DataChannel)
       case "webrtc-connect": {
         console.log("[signaling] Букмарклет хочет подключиться через WebRTC");
-        if (!rtcPeer) {
-          rtcPeer = new WebRTCPeer((data, channel) => {
-            console.log("[signaling] Получено от букмарклета через DataChannel:", data);
-            try {
-              const parsed = JSON.parse(data);
-              // Например, можем отправить обратно ответ
-              if (parsed.action === "ping") {
-                channel.send(
-                  JSON.stringify({
-                    action: "pong",
-                    message: "hello ты получил ответ от моего сервера (через WebRTC!)",
-                    timestamp: new Date().toISOString(),
-                  })
-                );
-              }
-            } catch (err) {
-              console.error("Ошибка парсинга:", err);
-            }
-          });
+
+        // Закрываем предыдущий пир если есть
+        if (rtcPeer) {
+          try { rtcPeer.close(); } catch (_) {}
+          rtcPeer = null;
         }
+
+        rtcPeer = new WebRTCPeer((data, channel) => {
+          console.log("[signaling] Получено от букмарклета через DataChannel:", data);
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.action === "ping") {
+              channel.sendMessage(
+                JSON.stringify({
+                  action: "pong",
+                  message: "hello ты получил ответ от моего сервера (через WebRTC!)",
+                  timestamp: new Date().toISOString(),
+                })
+              );
+            }
+          } catch (err) {
+            console.error("Ошибка парсинга:", err);
+          }
+        });
+
+        // Пробрасываем ICE кандидаты сервера обратно в браузер
+        rtcPeer.onIceCandidate = (candidate) => {
+          send(ws, { type: "webrtc-ice", candidate });
+        };
 
         // Создаём offer и отправляем браузеру
         try {
           const offer = await rtcPeer.createOffer();
-          send(ws, {
-            type: "webrtc-offer",
-            offer: offer,
-          });
+          send(ws, { type: "webrtc-offer", offer });
         } catch (err) {
           console.error("Ошибка создания offer:", err);
           send(ws, { type: "error", message: "Failed to create offer" });
@@ -124,7 +130,7 @@ wss.on("connection", (ws) => {
         }
         break;
       }
-        
+
       // ICE кандидаты для WebRTC
       case "webrtc-ice": {
         if (rtcPeer && msg.candidate) {
@@ -156,3 +162,4 @@ wss.on("connection", (ws) => {
 server.listen(PORT, () => {
   console.log(`[signaling] listening on port ${PORT}`)
 })
+
