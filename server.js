@@ -41,7 +41,7 @@ function relay(roomId, sender, obj) {
 wss.on("connection", (ws) => {
   ws.roomId = null
 
-  ws.on("message", (raw) => {
+  ws.on("message", async (raw) => {
     let msg
     try {
       msg = JSON.parse(raw.toString())
@@ -124,7 +124,7 @@ wss.on("connection", (ws) => {
         }
         break;
       }
-
+        
       // ICE кандидаты для WebRTC
       case "webrtc-ice": {
         if (rtcPeer && msg.candidate) {
