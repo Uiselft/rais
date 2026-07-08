@@ -1,0 +1,16 @@
+{
+  "name": "webrtc-signaling",
+  "version": "1.0.0",
+  "description": "Minimal WebRTC signaling server (rooms + relay) for Railway",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
