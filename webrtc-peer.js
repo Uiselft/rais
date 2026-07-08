@@ -1,74 +1,92 @@
-import { RTCPeerConnection, RTCSessionDescription, RTCIceCandidate } from 'wrtc';
+import nodeDataChannel from 'node-datachannel';
+
+const { PeerConnection } = nodeDataChannel;
 
 export default class WebRTCPeer {
   constructor(onMessage) {
-    this.pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: ['stun:stun.l.google.com:19302'] },
-        { urls: ['stun:stun1.l.google.com:19302'] },
-      ],
-    });
-
     this.onMessage = onMessage;
     this.dataChannel = null;
+    this.iceCandidates = [];
+    this.onIceCandidate = null; // будет задан снаружи для отправки кандидатов браузеру
 
-    // Когда браузер создаёт DataChannel, мы его получаем
-    this.pc.ondatachannel = (event) => {
-      console.log('[WebRTC] Получен DataChannel от браузера');
-      this.setupDataChannel(event.channel);
-    };
+    this.pc = new PeerConnection('server-peer', {
+      iceServers: ['stun:stun.l.google.com:19302'],
+    });
 
-    // Логируем ICE кандидаты
-    this.pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log('[WebRTC] ICE candidate:', event.candidate.candidate);
+    this.pc.onStateChange((state) => {
+      console.log('[WebRTC] Connection state:', state);
+    });
+
+    this.pc.onGatheringStateChange((state) => {
+      console.log('[WebRTC] Gathering state:', state);
+    });
+
+    this.pc.onLocalCandidate((candidate, mid) => {
+      console.log('[WebRTC] Local ICE candidate:', candidate);
+      if (this.onIceCandidate) {
+        this.onIceCandidate({ candidate, sdpMid: mid });
       }
-    };
+    });
 
-    this.pc.onconnectionstatechange = () => {
-      console.log('[WebRTC] Connection state:', this.pc.connectionState);
-    };
+    // Когда браузер инициирует DataChannel
+    this.pc.onDataChannel((channel) => {
+      console.log('[WebRTC] DataChannel получен от браузера:', channel.getLabel());
+      this.setupDataChannel(channel);
+    });
   }
 
   setupDataChannel(channel) {
     this.dataChannel = channel;
 
-    channel.onopen = () => {
+    channel.onOpen(() => {
       console.log('[WebRTC] DataChannel открыт!');
-    };
+    });
 
-    channel.onmessage = (event) => {
-      console.log('[WebRTC] Сообщение от браузера:', event.data);
+    channel.onMessage((msg) => {
+      console.log('[WebRTC] Сообщение от браузера:', msg);
       if (this.onMessage) {
-        this.onMessage(event.data, channel);
+        this.onMessage(msg, channel);
       }
-    };
+    });
 
-    channel.onclose = () => {
+    channel.onClosed(() => {
       console.log('[WebRTC] DataChannel закрыт');
-    };
+      this.dataChannel = null;
+    });
 
-    channel.onerror = (error) => {
-      console.error('[WebRTC] DataChannel ошибка:', error);
-    };
+    channel.onError((err) => {
+      console.error('[WebRTC] DataChannel ошибка:', err);
+    });
   }
 
   async createOffer() {
-    try {
-      const offer = await this.pc.createOffer();
-      await this.pc.setLocalDescription(offer);
-      console.log('[WebRTC] Offer создан');
-      return this.pc.localDescription;
-    } catch (err) {
-      console.error('[WebRTC] Ошибка при создании offer:', err);
-      throw err;
-    }
+    return new Promise((resolve, reject) => {
+      // Создаём DataChannel со стороны сервера, чтобы инициировать offer
+      const dc = this.pc.createDataChannel('server-channel');
+      this.setupDataChannel(dc);
+
+      this.pc.setLocalDescription('offer');
+
+      // Ждём пока соберётся SDP
+      const checkSdp = setInterval(() => {
+        const sdp = this.pc.localDescription();
+        if (sdp && sdp.sdp && sdp.sdp.length > 0) {
+          clearInterval(checkSdp);
+          console.log('[WebRTC] Offer создан');
+          resolve(sdp);
+        }
+      }, 50);
+
+      setTimeout(() => {
+        clearInterval(checkSdp);
+        reject(new Error('Timeout: offer не создался за 5 секунд'));
+      }, 5000);
+    });
   }
 
   async handleAnswer(answer) {
     try {
-      const rtcAnswer = new RTCSessionDescription(answer);
-      await this.pc.setRemoteDescription(rtcAnswer);
+      this.pc.setRemoteDescription(answer.sdp, answer.type);
       console.log('[WebRTC] Answer установлен');
     } catch (err) {
       console.error('[WebRTC] Ошибка при обработке answer:', err);
@@ -77,20 +95,27 @@ export default class WebRTCPeer {
   }
 
   addIceCandidate(candidate) {
-    if (candidate && candidate.candidate) {
-      this.pc.addIceCandidate(new RTCIceCandidate(candidate));
+    try {
+      if (candidate && candidate.candidate) {
+        this.pc.addRemoteCandidate(candidate.candidate, candidate.sdpMid || '0');
+      }
+    } catch (err) {
+      console.error('[WebRTC] Ошибка добавления ICE candidate:', err);
     }
   }
 
   send(data) {
-    if (this.dataChannel && this.dataChannel.readyState === 'open') {
-      this.dataChannel.send(JSON.stringify(data));
+    if (this.dataChannel && this.dataChannel.isOpen()) {
+      this.dataChannel.sendMessage(typeof data === 'string' ? data : JSON.stringify(data));
     }
   }
 
   close() {
-    if (this.pc) {
-      this.pc.close();
+    try {
+      if (this.dataChannel) this.dataChannel.close();
+      if (this.pc) this.pc.close();
+    } catch (err) {
+      // ignore
     }
   }
 }
